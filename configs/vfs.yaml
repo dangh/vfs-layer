@@ -1,0 +1,9 @@
+storage_root: /storage
+view_root: /view
+max_safe_basename_bytes: 120
+hash_length: 16
+metadata_suffix: .meta
+preserve_safe_extensions: true
+case_insensitive_collision_checks: true
+cache_enabled: true
+watcher_enabled: true

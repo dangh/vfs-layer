@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  vfs:
+    build: .
+    privileged: true
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    volumes:
+      - /mnt/user/vfs/storage:/storage
+      - /mnt/user/vfs/view:/view:rshared
+      - /mnt/user/vfs/config:/config
+    restart: unless-stopped
