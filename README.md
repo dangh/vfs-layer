@@ -25,20 +25,6 @@ Then run:
 docker compose up -d
 ```
 
-The service key is `rclone-longnamefs`. If you use a second Compose override
-file, put overrides under that same service name so Compose merges them into the
-published image service:
-
-```yaml
-services:
-  rclone-longnamefs:
-    environment:
-      TZ: Asia/Singapore
-```
-
-Do not put overrides under a different service name unless that service also has
-its own `image:` or `build:` entry.
-
 The included `docker-compose.yml` mounts:
 
 - `/mnt/user/vfs/storage` as `/storage`
