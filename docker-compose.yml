@@ -1,8 +1,7 @@
-version: "3.8"
-
 services:
   vfs:
-    build: .
+    image: ghcr.io/dangh/vfs-layer:latest
+    pull_policy: always
     privileged: true
     devices:
       - /dev/fuse
