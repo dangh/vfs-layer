@@ -31,6 +31,9 @@ The included `docker-compose.yml` mounts:
 - `/mnt/user/vfs/view` as `/view`
 - `/mnt/user/vfs/config` as `/config`
 
+Configuration is optional. If `/config/vfs.yaml` is missing, the container uses
+the built-in defaults for `/storage`, `/view`, and `.meta` sidecars.
+
 If the package is private, log in first:
 
 ```sh

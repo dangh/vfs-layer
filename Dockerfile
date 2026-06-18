@@ -12,4 +12,4 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /vfs /usr/local/bin/vfs
-CMD ["vfs", "mount", "--storage", "/storage", "--view", "/view", "--config", "/config/vfs.yaml"]
+CMD ["vfs", "mount", "--storage", "/storage", "--view", "/view"]

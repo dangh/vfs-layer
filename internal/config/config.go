@@ -42,6 +42,9 @@ func Load(path string) (Config, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
 		return cfg, err
 	}
 	defer f.Close()
