@@ -1,5 +1,5 @@
 services:
-  vfs:
+  rclone-longnamefs:
     image: ghcr.io/dangh/vfs-layer:latest
     pull_policy: always
     privileged: true
