@@ -132,21 +132,11 @@ func (s *Store) Resolve(viewRel string) (string, error) {
 
 	cur := ""
 	for _, part := range strings.Split(rel, "/") {
-		entries, err := s.ListStorage(cur)
+		entry, err := s.EntryInStorageDir(cur, part)
 		if err != nil {
 			return "", err
 		}
-		found := false
-		for _, e := range entries {
-			if e.VirtualName == part {
-				cur = e.StorageRel
-				found = true
-				break
-			}
-		}
-		if !found {
-			return "", ErrNotFound
-		}
+		cur = entry.StorageRel
 	}
 	return cur, nil
 }
@@ -168,16 +158,7 @@ func (s *Store) ResolveEntry(viewRel string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	entries, err := s.ListStorage(parentStorage)
-	if err != nil {
-		return Entry{}, err
-	}
-	for _, e := range entries {
-		if e.VirtualName == name {
-			return e, nil
-		}
-	}
-	return Entry{}, ErrNotFound
+	return s.EntryInStorageDir(parentStorage, name)
 }
 
 func (s *Store) Open(viewRel string, flags int, perm fs.FileMode) (*os.File, string, error) {
@@ -297,7 +278,7 @@ func (s *Store) Rename(srcViewRel, dstViewRel string) error {
 	}
 
 	var dstStorageRel string
-	dstEntry, dstErr := s.entryInStorageDir(dstParentStorage, dstName)
+	dstEntry, dstErr := s.EntryInStorageDir(dstParentStorage, dstName)
 	dstExists := dstErr == nil
 	if dstExists {
 		dstStorageRel = dstEntry.StorageRel
@@ -393,7 +374,7 @@ func (s *Store) AbsStoragePath(storageRel string) (string, error) {
 }
 
 func (s *Store) ensureVirtualMissing(parentStorage, name string) error {
-	if _, err := s.entryInStorageDir(parentStorage, name); err == nil {
+	if _, err := s.EntryInStorageDir(parentStorage, name); err == nil {
 		return ErrExists
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
@@ -401,7 +382,13 @@ func (s *Store) ensureVirtualMissing(parentStorage, name string) error {
 	return nil
 }
 
-func (s *Store) entryInStorageDir(parentStorage, virtualName string) (Entry, error) {
+func (s *Store) EntryInStorageDir(parentStorage, virtualName string) (Entry, error) {
+	if entry, err := s.directEntryInStorageDir(parentStorage, virtualName); err == nil {
+		return entry, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return Entry{}, err
+	}
+
 	entries, err := s.ListStorage(parentStorage)
 	if err != nil {
 		return Entry{}, err
@@ -412,6 +399,36 @@ func (s *Store) entryInStorageDir(parentStorage, virtualName string) (Entry, err
 		}
 	}
 	return Entry{}, ErrNotFound
+}
+
+func (s *Store) directEntryInStorageDir(parentStorage, virtualName string) (Entry, error) {
+	if !s.namer.IsSafe(virtualName) {
+		return Entry{}, ErrNotFound
+	}
+	parentAbs, err := s.abs(parentStorage)
+	if err != nil {
+		return Entry{}, err
+	}
+	storageAbs := filepath.Join(parentAbs, virtualName)
+	info, err := os.Lstat(storageAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Entry{}, ErrNotFound
+		}
+		return Entry{}, err
+	}
+	if _, err := os.Lstat(meta.SidecarPath(storageAbs, s.suffix)); err == nil {
+		return Entry{}, ErrNotFound
+	} else if !os.IsNotExist(err) {
+		return Entry{}, err
+	}
+	return Entry{
+		StorageName: virtualName,
+		StorageRel:  joinRel(parentStorage, virtualName),
+		VirtualName: virtualName,
+		IsDir:       info.IsDir(),
+		Info:        info,
+	}, nil
 }
 
 func (s *Store) parentStorageAndName(viewRel string) (string, string, error) {

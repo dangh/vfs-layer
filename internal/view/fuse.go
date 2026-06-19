@@ -15,8 +15,9 @@ import (
 
 type Node struct {
 	gofs.Inode
-	store   *storage.Store
-	viewRel string
+	store      *storage.Store
+	viewRel    string
+	storageRel string
 }
 
 func Mount(mountpoint string, store *storage.Store, debug bool) (*fuse.Server, error) {
@@ -33,7 +34,7 @@ var _ = (gofs.NodeLookuper)((*Node)(nil))
 
 func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*gofs.Inode, syscall.Errno) {
 	childRel := joinView(n.viewRel, name)
-	entry, err := n.store.ResolveEntry(childRel)
+	entry, err := n.store.EntryInStorageDir(n.storageRel, name)
 	if err != nil {
 		return nil, errno(err)
 	}
@@ -46,13 +47,13 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*go
 		return nil, errno(err)
 	}
 	out.Attr.FromStat(st)
-	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel}, stableFromStat(st)), 0
+	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel, storageRel: entry.StorageRel}, stableFromStat(st)), 0
 }
 
 var _ = (gofs.NodeReaddirer)((*Node)(nil))
 
 func (n *Node) Readdir(ctx context.Context) (gofs.DirStream, syscall.Errno) {
-	entries, err := n.store.List(n.viewRel)
+	entries, err := n.store.ListStorage(n.storageRel)
 	if err != nil {
 		return nil, errno(err)
 	}
@@ -71,7 +72,11 @@ func (n *Node) Readdir(ctx context.Context) (gofs.DirStream, syscall.Errno) {
 var _ = (gofs.NodeOpener)((*Node)(nil))
 
 func (n *Node) Open(ctx context.Context, flags uint32) (gofs.FileHandle, uint32, syscall.Errno) {
-	f, _, err := n.store.Open(n.viewRel, int(flags), 0)
+	abs, err := n.store.AbsStoragePath(n.storageRel)
+	if err != nil {
+		return nil, 0, errno(err)
+	}
+	f, err := os.OpenFile(abs, int(flags), 0)
 	if err != nil {
 		return nil, 0, errno(err)
 	}
@@ -103,7 +108,7 @@ func (n *Node) Create(ctx context.Context, name string, flags uint32, mode uint3
 		return nil, nil, 0, errno(err)
 	}
 	out.Attr.FromStat(st)
-	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel}, stableFromStat(st)), fh, 0, 0
+	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel, storageRel: storageRel}, stableFromStat(st)), fh, 0, 0
 }
 
 var _ = (gofs.NodeMkdirer)((*Node)(nil))
@@ -126,7 +131,7 @@ func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.En
 		return nil, errno(err)
 	}
 	out.Attr.FromStat(st)
-	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel}, stableFromStat(st)), 0
+	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel, storageRel: entry.StorageRel}, stableFromStat(st)), 0
 }
 
 var _ = (gofs.NodeRenamer)((*Node)(nil))
@@ -162,11 +167,7 @@ func (n *Node) Getattr(ctx context.Context, f gofs.FileHandle, out *fuse.AttrOut
 			return getter.Getattr(ctx, out)
 		}
 	}
-	storageRel, err := n.store.Resolve(n.viewRel)
-	if err != nil {
-		return errno(err)
-	}
-	abs, err := n.store.AbsStoragePath(storageRel)
+	abs, err := n.store.AbsStoragePath(n.storageRel)
 	if err != nil {
 		return errno(err)
 	}
@@ -190,11 +191,7 @@ func (n *Node) Setattr(ctx context.Context, f gofs.FileHandle, in *fuse.SetAttrI
 		}
 	}
 
-	storageRel, err := n.store.Resolve(n.viewRel)
-	if err != nil {
-		return errno(err)
-	}
-	abs, err := n.store.AbsStoragePath(storageRel)
+	abs, err := n.store.AbsStoragePath(n.storageRel)
 	if err != nil {
 		return errno(err)
 	}
