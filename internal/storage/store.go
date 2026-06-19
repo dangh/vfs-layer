@@ -26,10 +26,14 @@ var (
 )
 
 type Store struct {
-	root   string
-	namer  naming.Namer
-	suffix string
-	mu     sync.Mutex
+	root         string
+	namer        naming.Namer
+	suffix       string
+	cacheEnabled bool
+	cacheTTL     time.Duration
+	mu           sync.Mutex
+	cacheMu      sync.Mutex
+	dirCache     map[string]cachedDir
 }
 
 type Entry struct {
@@ -38,6 +42,12 @@ type Entry struct {
 	VirtualName string
 	IsDir       bool
 	Info        fs.FileInfo
+}
+
+type cachedDir struct {
+	expires time.Time
+	entries []Entry
+	byName  map[string]Entry
 }
 
 func New(root string, cfg config.Config) (*Store, error) {
@@ -49,11 +59,15 @@ func New(root string, cfg config.Config) (*Store, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{
-		root:   abs,
-		namer:  naming.New(cfg.MaxSafeBasenameBytes, cfg.HashLength, cfg.MetadataSuffix, cfg.PreserveSafeExtensions),
-		suffix: cfg.MetadataSuffix,
-	}, nil
+	store := &Store{
+		root:         abs,
+		namer:        naming.New(cfg.MaxSafeBasenameBytes, cfg.HashLength, cfg.MetadataSuffix, cfg.PreserveSafeExtensions),
+		suffix:       cfg.MetadataSuffix,
+		cacheEnabled: cfg.CacheEnabled,
+		cacheTTL:     5 * time.Second,
+		dirCache:     map[string]cachedDir{},
+	}
+	return store, nil
 }
 
 func (s *Store) Root() string {
@@ -82,6 +96,14 @@ func (s *Store) List(viewDirRel string) ([]Entry, error) {
 }
 
 func (s *Store) ListStorage(storageDirRel string) ([]Entry, error) {
+	storageDirRel, err := cleanStorageRel(storageDirRel)
+	if err != nil {
+		return nil, err
+	}
+	if entries, ok := s.cachedEntries(storageDirRel); ok {
+		return entries, nil
+	}
+
 	dirAbs, err := s.abs(storageDirRel)
 	if err != nil {
 		return nil, err
@@ -118,7 +140,8 @@ func (s *Store) ListStorage(storageDirRel string) ([]Entry, error) {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].VirtualName < out[j].VirtualName
 	})
-	return out, nil
+	s.setCachedEntries(storageDirRel, out)
+	return cloneEntries(out), nil
 }
 
 func (s *Store) Resolve(viewRel string) (string, error) {
@@ -221,6 +244,7 @@ func (s *Store) Open(viewRel string, flags int, perm fs.FileMode) (*os.File, str
 		}
 		return nil, "", err
 	}
+	s.invalidateDir(parentStorage)
 	return f, storageRel, nil
 }
 
@@ -255,6 +279,7 @@ func (s *Store) Mkdir(viewRel string, perm fs.FileMode) error {
 		}
 		return err
 	}
+	s.invalidateDir(parentStorage)
 	return nil
 }
 
@@ -324,6 +349,8 @@ func (s *Store) Rename(srcViewRel, dstViewRel string) error {
 			return err
 		}
 	}
+	s.invalidateDir(parentOfStorageRel(srcStorageRel))
+	s.invalidateDir(dstParentStorage)
 	return nil
 }
 
@@ -342,6 +369,7 @@ func (s *Store) Remove(viewRel string) error {
 	if err := os.Remove(abs); err != nil {
 		return err
 	}
+	s.invalidateDir(parentOfStorageRel(storageRel))
 	return meta.DeleteName(abs, s.suffix)
 }
 
@@ -354,7 +382,11 @@ func (s *Store) Truncate(viewRel string, size int64) error {
 	if err != nil {
 		return err
 	}
-	return os.Truncate(abs, size)
+	if err := os.Truncate(abs, size); err != nil {
+		return err
+	}
+	s.invalidateDir(parentOfStorageRel(storageRel))
+	return nil
 }
 
 func (s *Store) Chtimes(viewRel string, atime, mtime time.Time) error {
@@ -366,7 +398,11 @@ func (s *Store) Chtimes(viewRel string, atime, mtime time.Time) error {
 	if err != nil {
 		return err
 	}
-	return os.Chtimes(abs, atime, mtime)
+	if err := os.Chtimes(abs, atime, mtime); err != nil {
+		return err
+	}
+	s.invalidateDir(parentOfStorageRel(storageRel))
+	return nil
 }
 
 func (s *Store) AbsStoragePath(storageRel string) (string, error) {
@@ -383,6 +419,13 @@ func (s *Store) ensureVirtualMissing(parentStorage, name string) error {
 }
 
 func (s *Store) EntryInStorageDir(parentStorage, virtualName string) (Entry, error) {
+	parentStorage, err := cleanStorageRel(parentStorage)
+	if err != nil {
+		return Entry{}, err
+	}
+	if entry, ok := s.cachedEntry(parentStorage, virtualName); ok {
+		return entry, nil
+	}
 	if entry, err := s.directEntryInStorageDir(parentStorage, virtualName); err == nil {
 		return entry, nil
 	} else if !errors.Is(err, ErrNotFound) {
@@ -399,6 +442,75 @@ func (s *Store) EntryInStorageDir(parentStorage, virtualName string) (Entry, err
 		}
 	}
 	return Entry{}, ErrNotFound
+}
+
+func (s *Store) cachedEntries(storageDirRel string) ([]Entry, bool) {
+	if !s.cacheEnabled {
+		return nil, false
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	cached, ok := s.dirCache[storageDirRel]
+	if !ok || time.Now().After(cached.expires) {
+		if ok {
+			delete(s.dirCache, storageDirRel)
+		}
+		return nil, false
+	}
+	return cloneEntries(cached.entries), true
+}
+
+func (s *Store) cachedEntry(storageDirRel, virtualName string) (Entry, bool) {
+	if !s.cacheEnabled {
+		return Entry{}, false
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	cached, ok := s.dirCache[storageDirRel]
+	if !ok || time.Now().After(cached.expires) {
+		if ok {
+			delete(s.dirCache, storageDirRel)
+		}
+		return Entry{}, false
+	}
+	entry, ok := cached.byName[virtualName]
+	return entry, ok
+}
+
+func (s *Store) setCachedEntries(storageDirRel string, entries []Entry) {
+	if !s.cacheEnabled {
+		return
+	}
+	byName := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		byName[entry.VirtualName] = entry
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.dirCache[storageDirRel] = cachedDir{
+		expires: time.Now().Add(s.cacheTTL),
+		entries: cloneEntries(entries),
+		byName:  byName,
+	}
+}
+
+func (s *Store) invalidateDir(storageDirRel string) {
+	if !s.cacheEnabled {
+		return
+	}
+	storageDirRel, err := cleanStorageRel(storageDirRel)
+	if err != nil {
+		return
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	delete(s.dirCache, storageDirRel)
+}
+
+func cloneEntries(entries []Entry) []Entry {
+	out := make([]Entry, len(entries))
+	copy(out, entries)
+	return out
 }
 
 func (s *Store) directEntryInStorageDir(parentStorage, virtualName string) (Entry, error) {
@@ -555,4 +667,9 @@ func joinRel(parent, name string) string {
 		return name
 	}
 	return path.Join(parent, name)
+}
+
+func parentOfStorageRel(storageRel string) string {
+	parent, _ := path.Split(storageRel)
+	return strings.TrimSuffix(parent, "/")
 }

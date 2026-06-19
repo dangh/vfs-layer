@@ -7,6 +7,8 @@ import (
 
 	gofs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+
+	"vfs-layer/internal/storage"
 )
 
 func lstat(path string) (*syscall.Stat_t, error) {
@@ -23,6 +25,27 @@ func stableFromStat(st *syscall.Stat_t) gofs.StableAttr {
 		Ino:  uint64(st.Ino),
 		Gen:  1,
 	}
+}
+
+func stableFromEntry(entry storage.Entry) gofs.StableAttr {
+	return gofs.StableAttr{
+		Mode: modeFromInfo(entry.Info),
+		Ino:  inodeFromRel(entry.StorageRel),
+		Gen:  1,
+	}
+}
+
+func fillEntryAttr(attr *fuse.Attr, entry storage.Entry) {
+	if st, ok := entry.Info.Sys().(*syscall.Stat_t); ok && st != nil {
+		attr.FromStat(st)
+		attr.Ino = inodeFromRel(entry.StorageRel)
+		return
+	}
+	attr.Ino = inodeFromRel(entry.StorageRel)
+	attr.Mode = modeFromInfo(entry.Info)
+	attr.Size = uint64(entry.Info.Size())
+	mod := entry.Info.ModTime()
+	attr.SetTimes(&mod, &mod, &mod)
 }
 
 func modeFromInfo(info fs.FileInfo) uint32 {

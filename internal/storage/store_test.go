@@ -108,3 +108,20 @@ func TestUnsafeDirectoryUsesPlainSafeName(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestListStorageCacheInvalidatesAfterMkdir(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.ListStorage(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Mkdir("safe-dir", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.ListStorage("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].VirtualName != "safe-dir" {
+		t.Fatalf("cache was not invalidated after mkdir: %#v", entries)
+	}
+}

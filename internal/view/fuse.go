@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"syscall"
+	"time"
 
 	gofs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -21,8 +22,12 @@ type Node struct {
 }
 
 func Mount(mountpoint string, store *storage.Store, debug bool) (*fuse.Server, error) {
+	cacheTTL := 5 * time.Second
 	root := &Node{store: store}
 	return gofs.Mount(mountpoint, root, &gofs.Options{
+		EntryTimeout:    &cacheTTL,
+		AttrTimeout:     &cacheTTL,
+		NegativeTimeout: &cacheTTL,
 		MountOptions: fuse.MountOptions{
 			Debug: debug,
 			Name:  "vfs-layer",
@@ -38,16 +43,8 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*go
 	if err != nil {
 		return nil, errno(err)
 	}
-	abs, err := n.store.AbsStoragePath(entry.StorageRel)
-	if err != nil {
-		return nil, errno(err)
-	}
-	st, err := lstat(abs)
-	if err != nil {
-		return nil, errno(err)
-	}
-	out.Attr.FromStat(st)
-	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel, storageRel: entry.StorageRel}, stableFromStat(st)), 0
+	fillEntryAttr(&out.Attr, entry)
+	return n.NewInode(ctx, &Node{store: n.store, viewRel: childRel, storageRel: entry.StorageRel}, stableFromEntry(entry)), 0
 }
 
 var _ = (gofs.NodeReaddirer)((*Node)(nil))
@@ -70,6 +67,12 @@ func (n *Node) Readdir(ctx context.Context) (gofs.DirStream, syscall.Errno) {
 }
 
 var _ = (gofs.NodeOpener)((*Node)(nil))
+
+var _ = (gofs.NodeAccesser)((*Node)(nil))
+
+func (n *Node) Access(ctx context.Context, mask uint32) syscall.Errno {
+	return syscall.ENOSYS
+}
 
 func (n *Node) Open(ctx context.Context, flags uint32) (gofs.FileHandle, uint32, syscall.Errno) {
 	abs, err := n.store.AbsStoragePath(n.storageRel)
